@@ -557,7 +557,7 @@ def flowmap_from_skeletons(
 
     # 9) Flowmap zusammenbauen
     flow = np.zeros((H, W, 4), dtype=dt)
-    
+    #flow[:, :, :] = max
     # Kanäle 1/2 nur im Cluster setzen
     flow[cy, cx, 1] = enc_ny
     flow[cy, cx, 2] = enc_x

@@ -9,14 +9,15 @@ import cv2
 import numpy as np
 
 
-import math, os
+import math, os, sys
 from time import time
 
 from typing import Union, Literal, Tuple
 
 import colorsys, hashlib
+from importlib import reload
 
-from sympy import Point
+#from sympy import Point
 
 from ImageToFlowmap.FileHandler import SaveFlowmap, get_datatype
 from ImageToFlowmap.networker_4 import junction, pointpath
@@ -49,7 +50,7 @@ out vec4 FragColor;
 uniform sampler2D uTex;
 uniform vec4 uColor;
 uniform float uAlpha;
-uniform bool uBlingBling;
+uniform bool uSelected;
 uniform float uTime;
 
 void main() {
@@ -59,7 +60,7 @@ void main() {
 
     if (color.a < 0.01) discard;
 
-    if (uBlingBling) {
+    if (uSelected) {
         // Puls
         vec2 offsets[9] = vec2[](
         vec2(-1.0, -1.0), vec2(0.0, -1.0), vec2(1.0, -1.0),
@@ -122,7 +123,7 @@ out vec4 FragColor;
 uniform sampler2D uTex;
 uniform vec4 uColor;       // Basisfarbe des Arrows
 uniform float uAlpha;      // Transparenz
-uniform bool uBlingBling;  // Selection glow
+uniform bool uSelected;  // Selection glow
 uniform float uTime;       // Zeit für Puls
 
 in vec2 vTex; // Falls UVs vorhanden sind
@@ -130,7 +131,7 @@ in vec2 vTex; // Falls UVs vorhanden sind
 void main() {
     vec4 color = uColor;
 
-    if (uBlingBling) {
+    if (uSelected) {
         // Puls
         vec2 offsets[9] = vec2[](
         vec2(-1.0, -1.0), vec2(0.0, -1.0), vec2(1.0, -1.0),
@@ -172,101 +173,41 @@ void main() {
     gl_Position = uMVP * vec4(aPos, uZ, 1.0);
 }
 """
-FLOW_FRAG_SRC = """
-#version 330 core
-in vec2 vTex;
-out vec4 FragColor;
+# Helfer: shader compile/link
+def check_shader(shader):
+    if not glGetShaderiv(shader, GL_COMPILE_STATUS):
+        print(glGetShaderInfoLog(shader).decode())
+        raise RuntimeError("Shader compile error")
 
-uniform sampler2D uTex;
-uniform sampler2D uFlowmap;
-uniform sampler2D uPanner;
+def check_program(prog):
+    if not glGetProgramiv(prog, GL_LINK_STATUS):
+        print(glGetProgramInfoLog(prog).decode())
+        raise RuntimeError("Program link error")
+    
+def createShaderProgram(vs_src, fs_src):
+    vs = glCreateShader(GL_VERTEX_SHADER)
+    glShaderSource(vs, vs_src)
+    glCompileShader(vs)
+    assert glGetShaderiv(vs, GL_COMPILE_STATUS)
+    check_shader(vs)
+    fs = glCreateShader(GL_FRAGMENT_SHADER)
+    glShaderSource(fs, fs_src)
+    glCompileShader(fs)
+    assert glGetShaderiv(fs, GL_COMPILE_STATUS)
+    check_shader(vs)
+    program = glCreateProgram()
+    glAttachShader(program, vs)
+    glAttachShader(program, fs)
+    glLinkProgram(program)
+    assert glGetProgramiv(program, GL_LINK_STATUS)
+    check_program(program)
+    return program
 
-
-uniform float uOffset;
-uniform float uAlpha;
-uniform vec2 uPanning;
-uniform bool uBlingBling;     // Selection
-uniform float uTime;        // Time for blingbling
-uniform vec4 uColor; // Grundfarbe
-uniform int uDrawAsColor;   //-> draw as flowmap color
-uniform int  uFlowType;  // 0=Water, 1=Lava, 2=Fog
-uniform ivec3 uMaskX; // z.B. (1,0,0) für r, (0,1,0) für g, (0,0,-1) für -b
-uniform ivec3 uMaskY;
-
-void main() {
-    vec4 flow = texture(uFlowmap, vTex);
-    //flow.y = 1-flow.y;
-    vec4 color;
-    float mask = flow.a;
-    if (uDrawAsColor == 0) {
-        vec2 dir = normalize(vec2(dot(flow.rgb, uMaskX), dot(flow.rgb, uMaskY)));
-        //vec2 dir = normalize(vec2(flow.r, flow.g) * 2.0 - 1.0);
-                
-
-        // --- Water ---
-        if (uFlowType == 0) {
-            //mask = smoothstep(0.05, 1.0, mask);
-            vec2 uv1 = fract(vTex + dir * uOffset * uPanning);
-            vec2 uv2 = fract(vTex + dir * (uOffset + 0.5) * uPanning);
-            vec4 t1 = texture(uPanner, uv1);
-            vec4 t2 = texture(uPanner, uv2);
-            float blend = 0.5 + 0.5 * sin(uOffset * 3.1415);
-            color = mix(t1, t2, blend) * uColor;
-        }
-
-        // --- Lava ---
-        else if (uFlowType == 1) {
-            //mask = pow(mask, 2.0);
-            vec2 uv1 = fract(vTex + dir * uOffset * uPanning * 1.5);
-            vec2 uv2 = fract(vTex + dir * (uOffset + 0.33) * uPanning * 1.5);
-            vec4 t1 = texture(uPanner, uv1);
-            vec4 t2 = texture(uPanner, uv2);
-            float flicker = 0.5 + 0.5 * sin(uOffset * 12.0);
-            color = pow(mix(t1, t2, flicker) * uColor, vec4(1.2));
-        }
-
-        // --- Fog ---
-        else if (uFlowType == 2) {
-            dir *= 0.2;
-            //mask = smoothstep(0.0, 1.0, mask);
-            vec2 uv1 = fract(vTex + dir * uOffset * uPanning);
-            vec2 uv2 = fract(vTex - dir * (uOffset + 0.25) * uPanning);
-            vec4 t1 = texture(uPanner, uv1);
-            vec4 t2 = texture(uPanner, uv2);
-            float blend = 0.5 + 0.5 * sin(uOffset * 3.1415);
-            color = mix(t1, t2, blend) * uColor;
-            color.rgb = mix(color.rgb, vec3(1.0), 0.2);
-        }    
-    }
-    else {
-        color = flow;
-    }
-    color.a *= mask * uAlpha;
-    if (uBlingBling) {
-        // Puls
-        vec2 offsets[9] = vec2[](
-        vec2(-1.0, -1.0), vec2(0.0, -1.0), vec2(1.0, -1.0),
-        vec2(-1.0,  0.0), vec2(0.0,  0.0), vec2(1.0,  0.0),
-        vec2(-1.0,  1.0), vec2(0.0,  1.0), vec2(1.0,  1.0)
-        );
-        float weight[9] = float[](0.05, 0.1, 0.05, 0.1, 0.4, 0.1, 0.05, 0.1, 0.05);
-
-        vec4 accum = vec4(0.0);
-        for (int i = 0; i < 9; ++i)
-            accum += texture(uTex, vTex + offsets[i] * 0.002) * weight[i]; // 0.002 ≈ Blur-Radius
-
-        float pulse = 0.5 + 0.5 * sin(uTime * 6.0);
-        vec4 glow = accum * uColor * pulse * 1.5;
-        glow.a = clamp(glow.a, 0.0, 1.0); // Alpha auch weich
-
-        // Mischung: Original + Glow
-        FragColor = vec4(color.rgb + glow.rgb, color.a + glow.a * 0.8);
-    }
-    else {
-        FragColor = color;
-    }
-}
-"""
+def create_flowmapprogram():
+    import flowshadery
+    reload(flowshadery)
+    frag = flowshadery.flowshader
+    return createShaderProgram(FLOW_VERT_SRC, frag)
 
 baselinecolor = {"unselected" : (0.3,0.3,0.3), "halfselected" : (0.5,0.5,1), "selected" : (0.7,1,0.7)}
 basepointcolor = {"unselected" : (0.3,0.5,1), "halfselected" : (0.5,1,0.5), "selected" : (1,0.7,0.7)}
@@ -332,21 +273,49 @@ class PointLayer(ImageLayer):
 drawmodes = Literal["water", "lava", "fog"]
 drawmodemap = {x : i for i, x in enumerate(drawmodes.__args__)}
 class FlowmapLayer(ImageLayer):
-    def __init__(self, name, obj : flowmapobj, height, width, z_depth, alpha, ogimg, selected, offset = 0.0, speed=1.0, color = (0,0,0), drawmode : drawmodes = "water", drawAsColor = 0):
+    def __init__(self, name, obj : flowmapobj, height, width, z_depth, alpha, ogimg, selected, offset = 0.0, speed=1.0, color = (0,0,0), drawmode : drawmodes = "water", drawAsColor = 0, FlowMapVars = ["water", 0, 3.0, 14.0, 2.5, 0.72, 8.0]):
         super().__init__(name, obj.texture, height, width, z_depth, alpha, ogimg, selected, speed, color)
         self.pannertexture = obj.pannertexture
         self.panning_u = obj.panning_u
         self.panning_v = obj.panning_v
         self.offset = offset
         self.flowmapobj = obj
-        self.drawmode = drawmode
-        self.set_drawmode(drawmode)
-        self.drawAsColor = drawAsColor
+        self.frametime = 0
 
+        if type(drawmode) == list:
+            self.drawmode = drawmode.pop(0)
+            self.drawAsColor = drawmode.pop(0)
+            if FlowMapVars == ["water", 0, 3.0, 14.0, 2.5, 0.72, 8.0] and len(drawmode) == 5:
+                FlowMapVars = drawmode
+        else:
+            self.drawmode = drawmode
+            self.drawAsColor = drawAsColor
+            while len(FlowMapVars) > 5:
+                FlowMapVars.pop(0)
+
+        self.set_drawmode(self.drawmode)
+        
+
+        #Gerstner Wave Settings
+        self.FlowStrength = FlowMapVars.pop(0)
+        self.WaveFrequency = FlowMapVars.pop(0)
+        self.WaveSharpness = FlowMapVars.pop(0)
+        self.FoamThreshold = FlowMapVars.pop(0)
+        self.WaveScale = FlowMapVars.pop(0)
+
+    def add_frametime(self, add):        
+        self.frametime = (self.frametime + add) % pow(2,16)
+        return self.frametime
+    
     def set_drawmode(self, newdrawmode : drawmodes):
-        if not newdrawmode in drawmodemap: return False
-        self.drawmode = newdrawmode 
-        self.rdrawmode = drawmodemap[newdrawmode]
+        if type(newdrawmode) == str:
+            if not newdrawmode in drawmodemap: return False
+            self.drawmode = newdrawmode 
+            self.rdrawmode = drawmodemap[newdrawmode]
+        if type(newdrawmode) == int:
+            if newdrawmode >= len(drawmodemap): return False
+            self.rdrawmode = newdrawmode
+            self.drawmode = list(drawmodemap.keys())[newdrawmode]
 
 class LayerCollection:
     def __init__(self, layertype : Union[BaseLayer,ImageLayer, PathLayer, PointLayer, FlowmapLayer]):
@@ -491,13 +460,16 @@ class MyGL(QOpenGLWidget):
     
     def initializeGL(self):
         glClearColor(0.2, 0.2, 0.2, 1.0)
-        self.basicprogram = self.createShaderProgram(STATIC_VERT_SRC, STATIC_FRAG_SRC)
-        self.flowmapprogram = self.createShaderProgram(FLOW_VERT_SRC, FLOW_FRAG_SRC)
-        self.arrowprogram = self.createShaderProgram(ARROWS_VERT_SRC, ARROWS_FRAG_SRC)
+        self.basicprogram = createShaderProgram(STATIC_VERT_SRC, STATIC_FRAG_SRC)
+        self.create_flowmapprogram()
+        self.arrowprogram = createShaderProgram(ARROWS_VERT_SRC, ARROWS_FRAG_SRC)
         self._init_quad()
         self._init_arrow_renderer()
-        glEnable(GL_DEPTH_TEST)
+        glDisable(GL_DEPTH_TEST)
         self.initialized = True
+
+    def create_flowmapprogram(self):
+        self.flowmapprogram = create_flowmapprogram()
 
     def resizeGL(self, w, h):
         self.OG_OpenGL_width = self.width()
@@ -639,12 +611,12 @@ class MyGL(QOpenGLWidget):
 
         self.layercollections = [self.imagelayers, self.pathlayers, self.pointlayers, self.flowmaplayers]
 
-    def add_layer(self, layertype : layertypes, displayobj, layer_name : str, z_depth : int | float, alpha : float = 1.0, selected = False, offset = 0.0, speed = 1.0, color = (1,0,0), updateexisting = True):
+    def add_layer(self, layertype : layertypes, displayobj, layer_name : str, z_depth : int | float, alpha : float = 1.0, selected = False, offset = 0.0, speed = 1.0, color = (1,0,0), updateexisting = True, FlowMapVars = ["water", 0, 3.0, 14.0, 2.5, 0.72, 8.0]):
         Did = isinstance(layertype, (FlowmapLayer, ImageLayer, PathLayer, PointLayer))
         layer = None
         if updateexisting or (not updateexisting and not layer_name in self.get_layercollection_by_type(layertype)):
             if layertype == FlowmapLayer:    
-                layer = self.add_flowmap_layer(displayobj, layer_name, z_depth, alpha, selected, offset, speed, color)
+                layer = self.add_flowmap_layer(displayobj, layer_name, z_depth, alpha, selected, offset, speed, color, FlowMapVars = FlowMapVars)
             elif layertype == ImageLayer: 
                 layer = self.add_image_layer(displayobj, layer_name, z_depth, alpha, selected, speed, color)
             elif layertype == PathLayer:
@@ -664,10 +636,10 @@ class MyGL(QOpenGLWidget):
         
     def paintGL(self):
         if self.isupdating:
-            return False
+            return
         self.isupdating = True
         
-        self.timedelta = time() - self.last_update
+        self.timedelta = (time() - self.last_update) * self.overallspeed
         self.last_update = time()
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
@@ -688,61 +660,38 @@ class MyGL(QOpenGLWidget):
         startz = 0.001
         
         curlayer = sorted(self.imagelayers.items(), key=lambda x: x[1].depth)
-        maxlayer = len(curlayer)
-        selectedlayers = {}
         # --- Image-Layer ---
         for _, layer in curlayer:
             if layer.alpha > 0:
-                z = self.get_z_val(layer, startz, zmultiplier, maxlayer)
-                if layer.selected:
-                    selectedlayers[layer] = z
+                z = self.get_z_val(layer, startz, zmultiplier, len(curlayer))
                 self._draw_image_layer(layer, z, proj, layer.selected, False)
                 zmultiplier += 1
 
         curlayer = sorted(self.flowmaplayers.items(), key=lambda x: x[1].depth)
-        maxlayer = len(curlayer)
         # --- Flowmap-Layer ---
         for _, layer in curlayer:
             if layer.alpha > 0:
-                z = self.get_z_val(layer, startz, zmultiplier, maxlayer)
-                if layer.selected:
-                    selectedlayers[layer] = z
-                self._draw_flowmap_layer(layer, z, proj, layer.selected, False)
+                z = self.get_z_val(layer, startz, zmultiplier, len(curlayer))
+                self._draw_flowmap_layer(layer, z, proj, layer.selected)
                 zmultiplier += 1
 
         curlayer = sorted(self.pathlayers.items(), key=lambda x: x[1].depth)
-        maxlayer = len(curlayer)
         # --- Path-Layer ---
         for _, layer in curlayer:
             if layer.alpha > 0:
-                z = self.get_z_val(layer, startz, zmultiplier, maxlayer)
-                if layer.selected:
-                    selectedlayers[layer] = z
+                z = self.get_z_val(layer, startz, zmultiplier, len(curlayer))
                 self._draw_path_layer(layer, z, proj, layer.selected, False)
                 zmultiplier += 1
 
         curlayer = sorted(self.pointlayers.items(), key=lambda x: x[1].depth)
-        maxlayer = len(curlayer)
         # --- Point-Layer ---
         for _, layer in curlayer:
             if layer.alpha > 0:
-                z = self.get_z_val(layer, startz, zmultiplier, maxlayer)
-                if layer.selected:
-                    selectedlayers[layer] = z
+                z = self.get_z_val(layer, startz, zmultiplier, len(curlayer))
                 self._draw_point_layer(layer, z, proj, layer.selected, False)
                 zmultiplier += 1
 
         glBlendFunc(GL_ONE, GL_ONE)
-        #for layer, z in selectedlayers.items():
-        #    z = z + 0.001 * z
-        #    if type(layer) == ImageLayer:
-        #        self._draw_image_layer(layer, z, proj, False, True)
-        #    elif type(layer) == FlowmapLayer:
-        #        self._draw_flowmap_layer(layer, z, proj, False, True)
-        #    elif type(layer) == PathLayer:
-        #        self._draw_path_layer(layer, z, proj, False, True)
-        #    elif type(layer) == PointLayer:
-        #        self._draw_point_layer(layer, z, proj, False, True)
 
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
@@ -753,7 +702,7 @@ class MyGL(QOpenGLWidget):
     def get_layer_color_factor_sin(self, layer):
         return 1 + (math.sin(self.last_update * 5 * layer.speed) / 4)
     
-    def _draw_image_layer(self, layer, z, proj, selected, blingbling = False):
+    def _draw_image_layer(self, layer, z, proj, selected, Selected = False):
         glUseProgram(self.basicprogram)
 
         # Model: skaliere Quad (0..1) auf Layergröße (width x height)
@@ -767,7 +716,7 @@ class MyGL(QOpenGLWidget):
         glUniform1f(glGetUniformLocation(self.basicprogram, "uZ"), z)
         
         # Farbe (Selection / Normal)
-        glUniform1i(glGetUniformLocation(self.basicprogram, "uBlingBling"), blingbling)
+        glUniform1i(glGetUniformLocation(self.basicprogram, "uSelected"), Selected)
         glUniform1f(glGetUniformLocation(self.basicprogram, "uTime"), self.last_update)
         if selected:
             factor = self.get_layer_color_factor_sin(layer)
@@ -801,20 +750,37 @@ class MyGL(QOpenGLWidget):
                 lcoll.__delitem__(layer)
         self.update()
     
-    def gen_image_tex_and_params(self, img):
+    def gen_image_tex_and_params(self, img, imgtype = BaseLayer):
         h, w = img.shape[0], img.shape[1]
         data = img.tobytes()#("raw", "RGBA", 0, -1)
         self.makeCurrent()
         tex = glGenTextures(1)
         glBindTexture(GL_TEXTURE_2D, tex)
         
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
+        if imgtype == FlowmapLayer:
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+        else:
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
         #glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
         #glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, data)
+        if img.dtype == np.uint8:
+            internal, typ = GL_RGBA8, GL_UNSIGNED_BYTE
+        elif img.dtype == np.uint16:
+            internal, typ = GL_RGBA16, GL_UNSIGNED_SHORT
+        elif img.dtype == np.uint32:
+            internal, typ = GL_RGBA32UI, GL_UNSIGNED_INT
+        elif img.dtype == np.float32:
+            internal, typ = GL_RGBA32F, GL_FLOAT
+        elif img.dtype == np.float64: 
+            internal, typ = GL_RGBA32F, GL_FLOAT
+        glTexImage2D(GL_TEXTURE_2D, 0, internal, w, h, 0, GL_RGBA, typ, data)
+        if imgtype == FlowmapLayer:            
+            glGenerateMipmap(GL_TEXTURE_2D)
+        glFinish()
         return tex, h, w, img
     
     def add_image_layer(self, image, layer_name : str, z_depth : int | float, alpha : float = 1.0, selected = False, speed = 1.0, color = (1,1,1)):
@@ -842,12 +808,12 @@ class MyGL(QOpenGLWidget):
                 layer["offset"] -= 1.0
         self.update()
 
-    def _draw_path_layer(self, layer: PathLayer, z, proj, selected, blingbling = False):
+    def _draw_path_layer(self, layer: PathLayer, z, proj, selected, Selected = False):
         if not layer or layer.pointpath.texture is None:
             return
 
         # 1) Path-Image rendern
-        self._draw_image_layer(layer, z, proj, selected, blingbling)
+        self._draw_image_layer(layer, z, proj, selected, Selected)
 
         # 2) Cache der Pfadpunkte (wie gehabt)
         cache = getattr(layer, "_cache", None)
@@ -881,7 +847,7 @@ class MyGL(QOpenGLWidget):
         lheight = layer.height
         
         # 3) Animation
-        layer.offset += self.timedelta * self.overallspeed
+        layer.offset += self.timedelta
         base_pos = (layer.offset * layer.speed * 8)
 
         # 4) Pfeile vorbereiten
@@ -922,8 +888,8 @@ class MyGL(QOpenGLWidget):
         upload_mat4(glGetUniformLocation(self.arrowprogram, "uMVP"), mvp)
         #z offset
         glUniform1f(glGetUniformLocation(self.arrowprogram, "uZ"), z + 0.002)
-        #selection blingbling (partially gets bling bling in shader)
-        glUniform1i(glGetUniformLocation(self.arrowprogram, "uBlingBling"), blingbling)
+        #selection Selected (partially gets bling bling in shader)
+        glUniform1i(glGetUniformLocation(self.arrowprogram, "uSelected"), Selected)
         glUniform1f(glGetUniformLocation(self.arrowprogram, "uTime"), self.last_update)
         glUniform1i(glGetUniformLocation(self.arrowprogram, "uTex"), 0)
         if selected:# Farbe (Selection / Normal)
@@ -948,11 +914,11 @@ class MyGL(QOpenGLWidget):
         self.pointlayers[layer_name] = (pointobj, h, w, z_depth, alpha, img, selected, speed, color)
         return self.pointlayers[layer_name]
         
-    def _draw_point_layer(self, pathlayer : PointLayer, z, proj, selected, blingbling = False):
+    def _draw_point_layer(self, pathlayer : PointLayer, z, proj, selected, Selected = False):
         if not pathlayer or pathlayer.texture is None:
             return None
         
-        self._draw_image_layer(pathlayer, z, proj, selected, blingbling)
+        self._draw_image_layer(pathlayer, z, proj, selected, Selected)
     
 
     def gen_vao_vbo_ebo(self, flowmapobj, height, width):
@@ -985,13 +951,13 @@ class MyGL(QOpenGLWidget):
 
         glBindVertexArray(0)
     
-    def add_flowmap_layer(self, flowmapo : flowmapobj, layer_id, z_depth, alpha, selected, offset, speed, color):
-        tex, h, w, img = self.gen_image_tex_and_params((flowmapo.flowmap_image.astype(np.float64) /( 2**16-1)*(2**8-1)).astype(np.uint8))
+    def add_flowmap_layer(self, flowmapo : flowmapobj, layer_id, z_depth, alpha, selected, offset, speed, color, FlowMapVars = ["water", 0, 3.0, 14.0, 2.5, 0.72, 8.0]):
+        tex, h, w, img = self.gen_image_tex_and_params(flowmapo.flowmap_image, FlowmapLayer)
         flowmapo.texture = tex
         tex, r, q, img = self.gen_image_tex_and_params(self.pannertexture)
         flowmapo.pannertexture = tex
         self.gen_vao_vbo_ebo(flowmapo, h, w)
-        self.flowmaplayers[layer_id] = (flowmapo, h, w, z_depth, alpha, flowmapo.flowmap_image, selected, offset, speed, color)
+        self.flowmaplayers[layer_id] = (flowmapo, h, w, z_depth, alpha, flowmapo.flowmap_image, selected, offset, speed, color, FlowMapVars)
         return self.flowmaplayers[layer_id]
 
     # Die Funktion (einfügen in deine Klasse)#
@@ -1002,16 +968,16 @@ class MyGL(QOpenGLWidget):
         for fm in self.flowmaplayers.values():
             fm.panning_v = newv
             
-    def _draw_flowmap_layer(self, layer : FlowmapLayer, z : int, proj, selected, blingbling = False):
+    def _draw_flowmap_layer(self, layer : FlowmapLayer, z : int, proj, selected):
 
-        layer.offset += self.timedelta * self.overallspeed #* 0.
+        #layer.offset += self.timedelta #* 0.
 
         glUseProgram(self.flowmapprogram)
 
         # Model-Matrix (Quad 0..1 → Größe layer.width/height)
         model = scale(layer.width, layer.height, 1.0)
         mvp = proj @ model
-
+        
         glUniform1i(glGetUniformLocation(self.flowmapprogram, "uDrawAsColor"), layer.drawAsColor)
         # Uniforms
         upload_mat4(glGetUniformLocation(self.flowmapprogram, "uMVP"), mvp)
@@ -1022,9 +988,12 @@ class MyGL(QOpenGLWidget):
         glUniform2f(glGetUniformLocation(self.flowmapprogram, "uPanning"),
                     layer.panning_u, layer.panning_v)
         # Farbe (Selection / Normal)
-        #selection blingbling (partially gets bling bling in shader)
-        glUniform1i(glGetUniformLocation(self.flowmapprogram, "uBlingBling"), blingbling)
-        glUniform1f(glGetUniformLocation(self.flowmapprogram, "uTime"), self.last_update)
+        #selection Selected (partially gets bling bling in shader)
+        glUniform1i(glGetUniformLocation(self.flowmapprogram, "uSelected"), selected)
+        layer.add_frametime(self.timedelta * 0.1)
+        
+        glUniform1f(glGetUniformLocation(self.flowmapprogram, "uTime"), layer.frametime)
+        glUniform1f(glGetUniformLocation(self.flowmapprogram, "uTimeUnscaled"), self.last_update)
         glUniform1i(glGetUniformLocation(self.flowmapprogram, "uTex"), 0)
         if selected:
             factor = self.get_layer_color_factor_sin(layer)
@@ -1033,24 +1002,32 @@ class MyGL(QOpenGLWidget):
         else:
             glUniform4f(glGetUniformLocation(self.flowmapprogram, "uColor"), *layer.color, 1.0)
         ## Flowmap color channels
-        glUniform3i(glGetUniformLocation(self.flowmapprogram, "uMaskX"), *self.ColorChannelX)
-        glUniform3i(glGetUniformLocation(self.flowmapprogram, "uMaskY"), *self.ColorChannelY)
+        glUniform3f(glGetUniformLocation(self.flowmapprogram, "uMaskX"), *(float(xy) for xy in self.ColorChannelX))
+        glUniform3f(glGetUniformLocation(self.flowmapprogram, "uMaskY"), *(float(xy) for xy in self.ColorChannelY))
 
+        #Gerstner Wave Variables
+        glUniform1f(glGetUniformLocation(self.flowmapprogram, "uFlowStrength"), layer.FlowStrength * 3.45)
+        glUniform1f(glGetUniformLocation(self.flowmapprogram, "uWaveFreq"), layer.WaveFrequency * 3.45)
+        glUniform1f(glGetUniformLocation(self.flowmapprogram, "uWaveSharpness"), layer.WaveSharpness * 2.7)
+        glUniform1f(glGetUniformLocation(self.flowmapprogram, "uFoamThreshold"), layer.FoamThreshold * 0.63)
+        glUniform1f(glGetUniformLocation(self.flowmapprogram, "uWaveScale"), layer.WaveScale * 37.93)
+        
         # Flowmap-Textur
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_2D, layer.texture)
+        
         glUniform1i(glGetUniformLocation(self.flowmapprogram, "uFlowmap"), 0)
         #DrawMode
         glUniform1i(glGetUniformLocation(self.flowmapprogram, "uFlowType"), layer.rdrawmode)
         # Panner-Textur
-        glActiveTexture(GL_TEXTURE1)
-        glBindTexture(GL_TEXTURE_2D, layer.pannertexture)
-        glUniform1i(glGetUniformLocation(self.flowmapprogram, "uPanner"), 1)
+        #glActiveTexture(GL_TEXTURE1)
+        #glBindTexture(GL_TEXTURE_2D, layer.pannertexture)
+        #glUniform1i(glGetUniformLocation(self.flowmapprogram, "uPanner"), 1)
         # Quad zeichnen (genauso wie bei ImageLayer)
         glBindVertexArray(self.quadvao)
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, None)
         glBindVertexArray(0)
-
+        #print(layer.drawAsColor, z, layer.offset, layer.alpha, Selected, self.last_update, color, layer.color, self.ColorChannelX, self.ColorChannelY)
         glUseProgram(0)
 
     def get_layercollection_by_type(self, layertype : layertypes):
@@ -1364,35 +1341,7 @@ class MyGL(QOpenGLWidget):
         self.overallspeed = value
         self.Scrollbar_OverallSpeed.setValue(value * 100)
 
-    # Helfer: shader compile/link
-    def check_shader(self, shader):
-        if not glGetShaderiv(shader, GL_COMPILE_STATUS):
-            print(glGetShaderInfoLog(shader).decode())
-            raise RuntimeError("Shader compile error")
-
-    def check_program(self, prog):
-        if not glGetProgramiv(prog, GL_LINK_STATUS):
-            print(glGetProgramInfoLog(prog).decode())
-            raise RuntimeError("Program link error")
-        
-    def createShaderProgram(self, vs_src, fs_src):
-        vs = glCreateShader(GL_VERTEX_SHADER)
-        glShaderSource(vs, vs_src)
-        glCompileShader(vs)
-        assert glGetShaderiv(vs, GL_COMPILE_STATUS)
-        self.check_shader(vs)
-        fs = glCreateShader(GL_FRAGMENT_SHADER)
-        glShaderSource(fs, fs_src)
-        glCompileShader(fs)
-        assert glGetShaderiv(fs, GL_COMPILE_STATUS)
-        self.check_shader(vs)
-        program = glCreateProgram()
-        glAttachShader(program, vs)
-        glAttachShader(program, fs)
-        glLinkProgram(program)
-        assert glGetProgramiv(program, GL_LINK_STATUS)
-        self.check_program(program)
-        return program
+    
         
     def get_viewport_borders(self):
         vx0 = -self.offset_x / self.zoom - 20

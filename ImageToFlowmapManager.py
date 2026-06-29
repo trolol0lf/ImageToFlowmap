@@ -15,7 +15,7 @@ from multiprocessing import Process, Queue, Manager
 
 #addlog("debug", f"✅ Start of {sys.modules[__name__].__file__}!")
 from PySide6.QtWidgets import QApplication, QStyleFactory, QTableWidget, QMainWindow, QTableWidgetItem, QVBoxLayout, QLineEdit, QDialog, QScrollBar
-from PySide6.QtCore import QTimer, Qt, QTimer
+from PySide6.QtCore import QTimer, Qt, QTimer, QEvent
 from PySide6 import QtGui
 from settings import *
 
@@ -38,6 +38,12 @@ from OpenGLHandler import MyGL, ImageLayer, PathLayer, PointLayer, FlowmapLayer,
 
 networker.set_Accessmanager()
 
+class Filter(QObject):
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.MouseButtonPress:
+            print(event.button())  # Qt.LeftButton / RightButton / MiddleButton
+        return False
+    
 class FlowMapGenFiles():
     def __init__(self, BaseImagePath : xfile):
         self.ClusterFile    : xfile = None
@@ -238,12 +244,33 @@ class ImageToFlowmapUI(QMainWindow, Ui_ImageToFlowmap):
         self.SCRLB_FlowmapAlpha.valueChanged.connect(self.flowmap_alpha_changed)
         self.doubleSpinBox_SCRLB_Panning_X.valueChanged.connect(self.panning_x_changed)
         self.doubleSpinBox_SCRLB_Panning_Y.valueChanged.connect(self.panning_y_changed)
+        self.table_SelectFlowmap.viewport().installEventFilter(Filter())
+        self.table_SelectFlowmap.itemSelectionChanged.connect(self.SelectFlowmap_changed)
+        self.table_SelectFlowmap.OGmousePressEvent = self.table_SelectFlowmap.mousePressEvent
+        self.table_SelectFlowmap.mousePressEvent = self.SelectFlowmap_clicked
 
-        self.checkBox_DrawFlowmapColors.checkStateChanged.connect(self.checkBox_DrawFlowmapColors_StateChanged)
+        ##10. Shaderproperties
+        self.init_combobox_drawmode()
+        self.comboBox_DrawFlowmapColors.currentIndexChanged.connect(self.comboBox_DrawFlowmapColors_StateChanged)
+        self.comboBox_FlowType.currentIndexChanged.connect(self.comboBox_FlowType_StateChanged)
+        self.doubleSpinBox_Flowstrength.valueChanged.connect(self.doubleSpinBox_Flowstrength_ValueChanged)
+        self.doubleSpinBox_WaveFrequency.valueChanged.connect(self.doubleSpinBox_WaveFrequency_ValueChanged)
+        self.doubleSpinBox_WaveSharpness.valueChanged.connect(self.doubleSpinBox_WaveSharpness_ValueChanged)
+        self.doubleSpinBox_FoamThreshold.valueChanged.connect(self.doubleSpinBox_FoamThreshold_ValueChanged)
+        self.doubleSpinBox_WaveScale.valueChanged.connect(self.doubleSpinBox_WaveScale_ValueChanged)
+        self.SCRLB_Flowstrength.valueChanged.connect(self.SCRLB_Flowstrength_ValueChanged)
+        self.SCRLB_WaveFrequency.valueChanged.connect(self.SCRLB_WaveFrequency_ValueChanged)
+        self.SCRLB_WaveSharpness.valueChanged.connect(self.SCRLB_WaveSharpness_ValueChanged)
+        self.SCRLB_FoamThreshold.valueChanged.connect(self.SCRLB_FoamThreshold_ValueChanged)
+        self.SCRLB_WaveScale.valueChanged.connect(self.SCRLB_WaveScale_ValueChanged)
+
         self.Button_DisplayParameters.clicked.connect(self.display_parameters)
-
+        
+        self.Button_FlowmapExportFlowmap.clicked.connect(self.save_current_flowmap)
         self.Button_FlowmapExportFlowmaps.clicked.connect(self.save_current_flowmaps)
         self.Button_FlowmapGotoSaveLocation.clicked.connect(self.goto_flowmap_save_location)
+        self.Button_ResetTime.pressed.connect(self.Button_ResetTime_pressed)
+        self.Button_ReloadFlowshader.pressed.connect(self.Button_ReloadFlowShader_pressed)
         ##10. OpenGL Image
 
         # QOpenGLWidget erzeugen & den Designer-Container ersetzen
@@ -279,7 +306,17 @@ class ImageToFlowmapUI(QMainWindow, Ui_ImageToFlowmap):
             if hasattr(scrlb, "name") and "Alpha" in scrlb.name:
                 scrlb.setValue(100)
                 self.set_scrollbar_value_color(scrlb, 1)
-                
+
+    def init_combobox_drawmode(self):
+        self.comboBox_DrawFlowmapColors.addItem("Normal")
+        self.comboBox_DrawFlowmapColors.addItem("Flowmap")
+        self.comboBox_DrawFlowmapColors.addItem("Debug")
+        self.comboBox_DrawFlowmapColors.addItem("HeightMap")
+
+        self.comboBox_FlowType.addItem("Water")
+        self.comboBox_FlowType.addItem("Lava")
+        self.comboBox_FlowType.addItem("Fog")
+        
     def setsavepropertiesandload(self):
         ##Save properties
         stt = ["SaveIndex", "SaveContent"]
@@ -813,11 +850,32 @@ class ImageToFlowmapUI(QMainWindow, Ui_ImageToFlowmap):
     ##7. Paths End
     
     ##8. Flowmap Start
-    def flowmap_selected(self):
-        pass
-    def update_flowmap_table(self):
-        oldrowindex = self.table_SelectPath.row(self.table_SelectPath.currentItem())
+    def SelectFlowmap_changed(self):
+        curi = self.table_SelectFlowmap.currentRow()
+        self.SelectFlowmap_SetSelectState(curi)
 
+    selectflowmapcall = False
+    def SelectFlowmap_clicked(self, e):
+        if e.button() == Qt.MouseButton.RightButton:
+            self.SelectFlowmap_SetSelectState(-1)
+            self.selectflowmapcall = True
+            self.table_SelectFlowmap.clearSelection()
+            self.selectflowmapcall = False
+            e.accept()
+        else:
+            self.table_SelectFlowmap.OGmousePressEvent(e)
+
+    def SelectFlowmap_SetSelectState(self, newi):
+        if not self.selectflowmapcall:
+            rows = self.table_SelectFlowmap.rowCount() - 1
+            for i in range(rows + 1):
+                item = self.table_SelectFlowmap.item(i, 0)
+                fm = item.data(256)
+                if i != newi:
+                    self.OpenGL_MainImage.set_layer_as_deselected(FlowmapLayer, fm, i == rows)
+                else:
+                    self.OpenGL_MainImage.set_layer_as_selected(FlowmapLayer, fm, i == rows)
+            
     def flowmap_alpha_changed(self, val):
         self.OpenGL_MainImage.layer_alpha_value_change(FlowmapLayer, "", val / 100, change_multiple = True)
         self.set_scrollbar_value_color(self.SCRLB_FlowmapAlpha, 1)
@@ -828,10 +886,83 @@ class ImageToFlowmapUI(QMainWindow, Ui_ImageToFlowmap):
     def panning_y_changed(self, val):
         self.OpenGL_MainImage.set_panner_v(val)
 
-    def checkBox_DrawFlowmapColors_StateChanged(self, val):
-        checked = self.checkBox_DrawFlowmapColors.isChecked()
-        for fl in self.OpenGL_MainImage.flowmaplayers.values():
-            fl.drawAsColor = int(checked)
+    def comboBox_DrawFlowmapColors_StateChanged(self):
+        if hasattr(self, "OpenGL_MainImage"):
+            checked = self.comboBox_DrawFlowmapColors.currentIndex()
+            for fl in self.OpenGL_MainImage.flowmaplayers.values():
+                fl.drawAsColor = checked
+
+    def comboBox_FlowType_StateChanged(self):
+        if hasattr(self, "OpenGL_MainImage"):
+            checked = self.comboBox_FlowType.currentIndex()
+            for fl in self.OpenGL_MainImage.flowmaplayers.values():
+                fl.set_drawmode(checked)
+
+    inernalshadervaluechangecall = False
+    def doubleSpinBox_Flowstrength_ValueChanged(self):        
+        if hasattr(self, "OpenGL_MainImage"):
+            val = self.doubleSpinBox_Flowstrength.value()
+            self.SCRLB_Flowstrength.setValue(val*100)
+            for fl in self.OpenGL_MainImage.flowmaplayers.values():
+                fl.FlowStrength = val
+
+    def doubleSpinBox_WaveFrequency_ValueChanged(self):        
+        if hasattr(self, "OpenGL_MainImage"):
+            val = self.doubleSpinBox_WaveFrequency.value()
+            self.SCRLB_WaveFrequency.setValue(val*100)
+            for fl in self.OpenGL_MainImage.flowmaplayers.values():
+                fl.WaveFrequency = val
+
+    def doubleSpinBox_WaveSharpness_ValueChanged(self):        
+        if hasattr(self, "OpenGL_MainImage"):
+            val = self.doubleSpinBox_WaveSharpness.value()
+            self.SCRLB_WaveSharpness.setValue(val*100)
+            for fl in self.OpenGL_MainImage.flowmaplayers.values():
+                fl.WaveSharpness = val
+
+    def doubleSpinBox_FoamThreshold_ValueChanged(self):        
+        if hasattr(self, "OpenGL_MainImage"):
+            val = self.doubleSpinBox_FoamThreshold.value()
+            self.SCRLB_FoamThreshold.setValue(val*100)
+            for fl in self.OpenGL_MainImage.flowmaplayers.values():
+                fl.FoamThreshold = val
+
+    def doubleSpinBox_WaveScale_ValueChanged(self):        
+        if hasattr(self, "OpenGL_MainImage"):
+            val = self.doubleSpinBox_WaveScale.value()
+            self.SCRLB_WaveScale.setValue(val*100)
+            for fl in self.OpenGL_MainImage.flowmaplayers.values():
+                fl.WaveScale = val
+
+    def SCRLB_Flowstrength_ValueChanged(self):
+        if not self.inernalshadervaluechangecall:
+            self.inernalshadervaluechangecall = True
+            self.doubleSpinBox_Flowstrength.setValue(self.SCRLB_Flowstrength.value()/100)
+            self.inernalshadervaluechangecall = False
+
+    def SCRLB_WaveFrequency_ValueChanged(self):        
+        if not self.inernalshadervaluechangecall:
+            self.inernalshadervaluechangecall = True
+            self.doubleSpinBox_WaveFrequency.setValue(self.SCRLB_WaveFrequency.value()/100)
+            self.inernalshadervaluechangecall = False
+
+    def SCRLB_WaveSharpness_ValueChanged(self):  
+        if not self.inernalshadervaluechangecall:
+            self.inernalshadervaluechangecall = True
+            self.doubleSpinBox_WaveSharpness.setValue(self.SCRLB_WaveSharpness.value()/100)
+            self.inernalshadervaluechangecall = False
+
+    def SCRLB_FoamThreshold_ValueChanged(self):  
+        if not self.inernalshadervaluechangecall:
+            self.inernalshadervaluechangecall = True
+            self.doubleSpinBox_FoamThreshold.setValue(self.SCRLB_FoamThreshold.value()/100)
+            self.inernalshadervaluechangecall = False
+
+    def SCRLB_WaveScale_ValueChanged(self):  
+        if not self.inernalshadervaluechangecall:
+            self.inernalshadervaluechangecall = True
+            self.doubleSpinBox_WaveScale.setValue(self.SCRLB_WaveScale.value()/100)
+            self.inernalshadervaluechangecall = False
 
     def display_parameters(self):
         global linecolor, pointcolor
@@ -867,11 +998,20 @@ class ImageToFlowmapUI(QMainWindow, Ui_ImageToFlowmap):
             self.lineEdit_PanningTexture.setText(file)
 
     def add_flowmap_to_layer(self, nflowmap : flowmapobj, h, w, layername = "", updateexisting = True):
-        self.OpenGL_MainImage.add_layer(layertype=FlowmapLayer, displayobj=nflowmap, layer_name=layername, z_depth=3, alpha=self.SCRLB_FlowmapAlpha.value() / 100, selected=False, offset=0, speed=1, color=(1,1,1), updateexisting=updateexisting)
-        self.OpenGL_MainImage.flowmaplayers[layername].drawAsColor = int(self.checkBox_DrawFlowmapColors.isChecked())
+        self.OpenGL_MainImage.add_layer(layertype=FlowmapLayer, displayobj=nflowmap, layer_name=layername, z_depth=3, alpha=self.SCRLB_FlowmapAlpha.value() / 100, selected=False, offset=0, speed=1, color=(1,1,1), updateexisting=updateexisting, FlowMapVars = [self.comboBox_FlowType.currentText().lower(), self.comboBox_DrawFlowmapColors.currentIndex(), self.doubleSpinBox_Flowstrength.value(), self.doubleSpinBox_WaveFrequency.value(), self.doubleSpinBox_WaveSharpness.value(), self.doubleSpinBox_FoamThreshold.value(), self.doubleSpinBox_WaveScale.value()])
+        self.OpenGL_MainImage.flowmaplayers[layername].drawAsColor = self.comboBox_DrawFlowmapColors.currentIndex()
+        nameitem = QTableWidgetItem()
+        nameitem.setFlags(nameitem.flags() & ~Qt.ItemIsEditable)
+        nameitem.setText(layername)
+        nameitem.setData(256, layername)
+        self.table_SelectFlowmap.setRowCount(self.table_SelectFlowmap.rowCount()+1)
+        self.table_SelectFlowmap.setItem(self.table_SelectFlowmap.rowCount() - 1, 0, nameitem)
         
     def flowmap_generate_all(self):
-        self.update_progressbar("FlowmappingAll", 0.1)
+        self.update_progressbar("FlowmappingAll", 0.1)        
+        self.OpenGL_MainImage.remove_layer(FlowmapLayer, "", True)
+        self.table_SelectFlowmap.clearContents()
+        self.table_SelectFlowmap.setRowCount(0)
         self.start_process("FlowmappingAll", True)
         
     def flowmap_generate_selected_network(self):
@@ -885,6 +1025,12 @@ class ImageToFlowmapUI(QMainWindow, Ui_ImageToFlowmap):
             for network in cluster.networks:
                 network.flowmapobjs = []
         self.OpenGL_MainImage.remove_layer(FlowmapLayer, "", True)
+
+    def save_current_flowmap(self, clusterfile):
+        Item : QTableWidgetItem = self.table_SelectFlowmap.currentItem()
+        if Item:
+            FMapLayer : FlowmapLayer = Item.data(256)
+            self.save_flowmap(clusterfile=clusterfile, flowmap=FMapLayer.flowmapobj)   
 
     def save_current_flowmaps(self, clusterfile):
         Fmgf = clusterfile
@@ -914,6 +1060,16 @@ class ImageToFlowmapUI(QMainWindow, Ui_ImageToFlowmap):
             subprocess.Popen(r'explorer /open,"' + Fmgf.FlowMapFile.root.replace(r'/', '\\'[0])+ '"')
     ##8. Flowmap End
 
+    def Button_ResetTime_pressed(self):
+        self.OpenGL_MainImage.startTimer = 0
+        self.OpenGL_MainImage.timedelta = 0
+        for LCol in self.OpenGL_MainImage.layercollections:
+            for l in (x for x in LCol.values()):
+                if hasattr(l, "frametime"):
+                    l.frametime = 0
+
+    def Button_ReloadFlowShader_pressed(self):
+        self.OpenGL_MainImage.create_flowmapprogram()
     
     ###Multithread Start
     def start_process(self, ProcessType : processtypes, killoldprocess = True):            
@@ -1021,7 +1177,7 @@ class ImageToFlowmapUI(QMainWindow, Ui_ImageToFlowmap):
         
         while not queue.empty():            
             val = queue.get()
-            #print(f"PT: ({ProcessType}) got val ({val}))")
+            print(f"PT: ({ProcessType}) got val ({val}))")
             if type(val) == int or type(val) == float:
                 if val == 100:
                     self.stop_timer(timer)
@@ -1143,18 +1299,17 @@ class ImageToFlowmapUI(QMainWindow, Ui_ImageToFlowmap):
                     QTimer.singleShot(0, partial(self.stop_timer,timer))
                     print(f"End of Flowmap generation")
 
-    def stop_timer(self, timer: Queue):
-        if timer:            
-            if hasattr(timer, "LambdaFunction"):
-                try:
-                    timer.timeout.disconnect(timer.LambdaFunction)
-                except:
-                    pass
-            try:
-                timer.stop()
-                timer.deleteLater()
-            except:
-                pass
+    def stop_timer(self, timer):
+        if timer is None:
+            return
+
+        if getattr(timer, "_stopped", False):
+            return
+
+        timer._stopped = True
+
+        timer.stop()
+        timer.deleteLater()
     ###Multithread End
     
     def get_lerp_color(self, color0 = (0,255,0), color1 = (255,165,0), alpha = 0.0):
@@ -1433,7 +1588,12 @@ class ImageToFlowmapUI(QMainWindow, Ui_ImageToFlowmap):
                     "lineeditcontent" : lineeditcontent,
                     "pointandlinecolors" : (pointcolor, linecolor),
                     "Flowmap Color Channel X" : self.OpenGL_MainImage.ColorChannelX,
-                    "Flowmap Color Channel Y" : self.OpenGL_MainImage.ColorChannelY
+                    "Flowmap Color Channel Y" : self.OpenGL_MainImage.ColorChannelY,
+                    "FlowStrength" : self.doubleSpinBox_Flowstrength.value(),
+                    "WaveFrequency" : self.doubleSpinBox_WaveFrequency.value(),
+                    "WaveSharpness" : self.doubleSpinBox_WaveSharpness.value(),
+                    "FoamThreshold" : self.doubleSpinBox_FoamThreshold.value(),
+                    "WaveScale" : self.doubleSpinBox_WaveScale.value()
                     }
 
         with open(self.savefilelocation, 'wb') as handle:
@@ -1447,6 +1607,12 @@ class ImageToFlowmapUI(QMainWindow, Ui_ImageToFlowmap):
                     allcont = pickle.load(handle)
                 if "Flowmap Color Channel X" in allcont: self.OpenGL_MainImage.ColorChannelX = allcont["Flowmap Color Channel X"]
                 if "Flowmap Color Channel Y" in allcont: self.OpenGL_MainImage.ColorChannelY = allcont["Flowmap Color Channel Y"]
+
+                if "FlowStrength" in allcont: self.doubleSpinBox_Flowstrength.setValue(float(allcont["FlowStrength"]))
+                if "WaveFrequency" in allcont: self.doubleSpinBox_WaveFrequency.setValue(float(allcont["WaveFrequency"]))
+                if "WaveSharpness" in allcont: self.doubleSpinBox_WaveSharpness.setValue(float(allcont["WaveSharpness"]))
+                if "FoamThreshold" in allcont: self.doubleSpinBox_FoamThreshold.setValue(float(allcont["FoamThreshold"]))
+                if "WaveScale" in allcont: self.doubleSpinBox_WaveScale.setValue(float(allcont["WaveScale"]))
 
                 tablecontent = allcont["tablecontent"]
                 lineeditcontent = allcont["lineeditcontent"]

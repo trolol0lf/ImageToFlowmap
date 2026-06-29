@@ -7,10 +7,6 @@ if __name__ == "__main__":
 import re
 import os
 from PySide6.QtWidgets import QFileDialog
-from click import Option
-from param import Filename
-from sklearn.cross_decomposition import PLSCanonical
-from sympy import EX, false
 import cv2
 import numpy as np
 import random as rnd
@@ -37,7 +33,6 @@ def select_file_ui(title="Bitte Datei auswählen", initialdir=None, filetypes=((
     root.destroy()
     return path
 
-from tables import Unknown
 
 class AccessManager():
     def __init__(self):
@@ -338,18 +333,19 @@ def ensure_save_flowmap_format(FlowMap, AddAlpha = False, Normalize = False, bit
     if ActualMap.dtype == np.dtype('bool'):
         if Resize:
             ActualMap = ActualMap.astype(dtype) * max
+        ActualMap = ActualMap.astype(dtype)
     elif (ActualMap.dtype == np.dtype('float64') or ActualMap.dtype == np.dtype('float32')):
-        if Normalize and (ActualMap.max() > 1.0 or ActualMap.min() < 0.0):
-            ActualMap += ActualMap.min()
-            ActualMap /= ActualMap.max() * max
-        if Resize:
-            ActualMap = ActualMap * max
+        if Normalize:
+            ActualMap -= ActualMap.min()
+            ActualMap = ActualMap / ActualMap.max()
+            if Resize:
+                ActualMap = ActualMap * np.finfo(ActualMap.dtype).max
     elif ActualMap.dtype != dtype:
         if dtype == np.uint8 and ActualMap.dtype == np.uint16:
             ActualMap = (ActualMap.astype(np.float64) / (2**16-1) * (2**8-1)).astype(dtype)
         elif dtype == np.uint16 and ActualMap.dtype == np.uint8:
             ActualMap = (ActualMap.astype(np.float64) / (2**8-1) * (2**16-1)).astype(dtype)
-    ActualMap = ActualMap.astype(dtype)
+        ActualMap = ActualMap.astype(dtype)
     # Falls Alpha erwünscht -> auf BGRA erweitern
     if len(ActualMap.shape) <= 2:  # Graustufen
         ActualMap = cv2.cvtColor(ActualMap, cv2.COLOR_GRAY2BGR)
